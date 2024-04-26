@@ -2,7 +2,9 @@ const express = require('express')
 const app = express()
 const cors = require('cors')
 const port = process.env.PORT || 5000;
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+
+const jwt = require('jsonwebtoken');
 
 require('dotenv').config();
 app.use(cors());
@@ -17,12 +19,36 @@ const client = new MongoClient(uri, {
     }
 });
 
+
+const verifyJwt = (req, res, next) => {
+     //console.log( 'bearer inside verifyJwt', req.headers.authorization);
+
+    const authHeader = req.headers.authorization;
+    console.log(authHeader)
+
+    if (!authHeader) {
+        return res.status(401).send('unauthorized access')
+    }
+
+    const token = authHeader.split(' ')[1];
+
+    jwt.verify(token, process.env.ACCESS_TOKEN, function (err, decoded) {
+        if (err) {
+            return res.status(403).send({ message: 'forbiden access' })
+        }
+        req.decoded = decoded;
+        next();
+    })
+}
+
+
 async function run() {
     try {
         const appointmentOptionsCollections = client.db('doctors_portal_recap2').collection('serviceAppointments')
         const bookingsCollections = client.db('doctors_portal_recap2').collection('bookings');
         const usersCollections = client.db('doctors_portal_recap2').collection('users');
 
+        // appointments options data get from database'
         app.get('/appointmentOptions', async (req, res) => {
             const date = req.query.date;
             // console.log(date);
@@ -39,15 +65,21 @@ async function run() {
             res.send(options)
         })
 
-
-        app.get('/bookings', async (req, res) => {
+        // bookings data get from database'
+        app.get('/bookings', verifyJwt, async (req, res) => {
             const email = req.query.email;
             const query = { email: email };
+
+            const decodedEmail = req.decoded.email;
+            if (email !== decodedEmail) {
+                return res.status(403).send({ message: 'forbiden access' })
+            }
+
             const bookings = await bookingsCollections.find(query).toArray();
             res.send(bookings);
         })
 
-
+        // bookings data post from database'
         app.post('/bookings', async (req, res) => {
             const booking = req.body;
             // console.log(booking);
@@ -66,12 +98,62 @@ async function run() {
         })
 
 
-        app.post('/users', async(req, res)=>{
+        // get token from user.
+        app.get('/jwt', async (req, res) => {
+            const email = req.query.email;
+            console.log(email);
+            const query = { email: email };
+            const user = await usersCollections.findOne(query);
+            if (user) {
+                const token = jwt.sign({ email }, process.env.ACCESS_TOKEN, { expiresIn: '1h' })
+                return res.send({ accessToken: token });
+            }
+            res.status(403).send({ accessToken: '' });
+        })
+
+
+        // users data post from database'
+        app.post('/users', async (req, res) => {
             const users = req.body;
             console.log(users);
             const result = await usersCollections.insertOne(users);
             res.send(result);
+        })
 
+        // get all users form database.
+        app.get('/users', async (req, res) => {
+            const query = {};
+            const allUsers = await usersCollections.find(query).toArray();
+            res.send(allUsers);
+        })
+
+        // chack user admin 
+        app.get('/users/admin/:email', async (req, res) => {
+            const email = req.params.email;
+            const query = { email }
+            const user = await usersCollections.findOne(query);
+            res.send({ isAdmin :user?.role === 'admin'})
+        })
+
+        // create admin role 
+        app.put('/users/admin/:id', verifyJwt, async (req, res) => {
+            const decodedEmail = req.decoded.email;
+            console.log(decodedEmail)
+            const query = { email: decodedEmail };
+            const users = await usersCollections.findOne(query);
+            if (users?.role !== 'admin') {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+            const id = req.params.id;
+            const filter = { _id: new ObjectId(id) };
+            const options = { upsert: true };
+            const updateDoc = {
+                $set: {
+                    role: 'admin'
+                }
+            }
+            const result = await usersCollections.updateOne(filter, updateDoc, options);
+            res.send(result);
         })
 
     }
